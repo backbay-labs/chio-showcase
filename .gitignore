@@ -1,0 +1,36 @@
+# Node
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+out/
+coverage/
+*.tsbuildinfo
+
+# Rust
+target/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.sample
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
