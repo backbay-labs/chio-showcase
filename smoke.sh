@@ -2,9 +2,7 @@
 set -euo pipefail
 
 EXAMPLE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-# Sibling checkout: .../standalone/chio-showcase → .../standalone/arc (arc repo still hosts the chio binary + SDKs)
-CHIO_ROOT="${CHIO_ROOT:-$(cd "${EXAMPLE_ROOT}/../arc" && pwd)}"
-source "${CHIO_ROOT}/examples/_shared/hello-http-common.sh"
+source "${EXAMPLE_ROOT}/scripts/common.sh"
 
 ARTIFACT_ROOT="${EXAMPLE_ROOT}/artifacts/live/$(date -u +"%Y%m%dT%H%M%SZ")"
 LOG_DIR="${ARTIFACT_ROOT}/logs"

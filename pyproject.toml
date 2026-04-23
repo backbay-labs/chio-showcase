@@ -17,8 +17,3 @@ dependencies = [
 
 [tool.uv]
 package = false
-
-[tool.uv.sources]
-chio-asgi = { path = "../arc/sdks/python/chio-asgi" }
-chio-fastapi = { path = "../arc/sdks/python/chio-fastapi" }
-chio-sdk-python = { path = "../arc/sdks/python/chio-sdk-python" }

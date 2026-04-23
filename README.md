@@ -30,12 +30,19 @@ Anthropic SDK for tool-use loops. Each MCP tool call is wrapped as a
 ## Running
 
 ```bash
-cargo build --bin chio
+# Install the chio CLI (once, if not already on PATH)
+curl -fsSL https://www.chio.world/install.sh | sh
+
+# Install Python deps from PyPI into a uv-managed venv
+uv sync
+
+# Run the smoke test
 ./smoke.sh
 ```
 
 Set `OPENAI_API_KEY` for live agent reasoning, or run without for
-deterministic fallback (CI mode).
+deterministic fallback (CI mode). If `chio` is already installed to a
+non-standard location, export `CHIO_BIN=/path/to/chio` before running.
 
 ## Scenarios
 

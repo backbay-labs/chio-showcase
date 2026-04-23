@@ -2,8 +2,7 @@
 set -euo pipefail
 
 EXAMPLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHIO_ROOT="${CHIO_ROOT:-$(cd "${EXAMPLE_ROOT}/../arc" && pwd)}"
-source "${CHIO_ROOT}/examples/_shared/hello-http-common.sh"
+source "${EXAMPLE_ROOT}/scripts/common.sh"
 
 prepare_scenario_dir() {
   local name="$1"
