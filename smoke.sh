@@ -2,142 +2,113 @@
 set -euo pipefail
 
 EXAMPLE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-source "${EXAMPLE_ROOT}/scripts/common.sh"
+APP_ROOT="${EXAMPLE_ROOT}/app"
 
-ARTIFACT_ROOT="${EXAMPLE_ROOT}/artifacts/live/$(date -u +"%Y%m%dT%H%M%SZ")"
-LOG_DIR="${ARTIFACT_ROOT}/logs"
-STATE_DIR="${ARTIFACT_ROOT}/state"
-mkdir -p "${LOG_DIR}" "${STATE_DIR}"
+# The Chio Evidence Console Playwright e2e suite is opt-in. It runs
+# automatically when either:
+#   - the caller sets CHIO_RUN_E2E=1 (explicit opt-in), or
+#   - the app has already been installed (node_modules present AND
+#     @playwright/test already resolved).
+# This keeps `smoke.sh` working on hosts without a JS toolchain while
+# exercising the UI end-to-end on developer laptops and CI workers that
+# have opted into the heavier path.
 
-CHIO_BIN="$(ensure_chio_bin)"
-SERVICE_TOKEN="${CHIO_SERVICE_TOKEN:-demo-token}"
-CHIO_AUTH_TOKEN="${CHIO_AUTH_TOKEN:-demo-token}"
+want_e2e=0
+if [[ "${CHIO_RUN_E2E:-0}" == "1" ]]; then
+  want_e2e=1
+fi
+if [[ "${CHIO_RUN_E2E:-}" != "0" && -d "${APP_ROOT}/node_modules/@playwright/test" ]]; then
+  want_e2e=1
+fi
 
-# Ports
-TRUST_PORT="$(pick_free_port)"
-OBS_PORT="$(pick_free_port)"
-GIT_PORT="$(pick_free_port)"
-PD_PORT="$(pick_free_port)"
-OPS_PORT="$(pick_free_port)"
-BROKER_PORT="$(pick_free_port)"
-COORD_PORT="$(pick_free_port)"
-EXEC_PORT="$(pick_free_port)"
-COORD_SIDECAR_PORT="$(pick_free_port)"
-EXEC_SIDECAR_PORT="$(pick_free_port)"
-
-export INCIDENT_NETWORK_CUSTOMER_WORKSPACE="${EXAMPLE_ROOT}/workspaces/customer-lab"
-export INCIDENT_NETWORK_PROVIDER_WORKSPACE="${EXAMPLE_ROOT}/workspaces/provider-lab"
-export INCIDENT_NETWORK_ACP_STATE_DIR="${STATE_DIR}/acp-broker"
-
-# Reset provider workspace
-mkdir -p "${EXAMPLE_ROOT}/workspaces/provider-lab/tenants/MeridianLabs/services"
-cp "${EXAMPLE_ROOT}/workspaces/provider-lab/templates/inference-gateway.seed.json" \
-   "${EXAMPLE_ROOT}/workspaces/provider-lab/tenants/MeridianLabs/services/inference-gateway.json"
-cp "${EXAMPLE_ROOT}/workspaces/provider-lab/templates/edge-global.seed.json" \
-   "${EXAMPLE_ROOT}/workspaces/provider-lab/tenants/MeridianLabs/services/edge-global.json"
-mkdir -p "${EXAMPLE_ROOT}/workspaces/provider-lab/operations"
-printf '[]\n' > "${EXAMPLE_ROOT}/workspaces/provider-lab/operations/audit-log.json"
-rm -rf "${EXAMPLE_ROOT}/workspaces/provider-lab/operations/evidence"
-
-BG_PIDS=()
-cleanup() {
-  for pid in "${BG_PIDS[@]}"; do
-    kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null
+# If we are going to run e2e, pin the artifact root up-front so we can
+# hand it to the scenario via --artifact-dir. This keeps the path known
+# before the scenario script prints it and avoids having to grep stdout.
+scenario_args=("$@")
+run_e2e=0
+if [[ "${want_e2e}" == "1" ]]; then
+  # Honour an explicit --artifact-dir if the caller provided one; otherwise
+  # mint one under the example artifacts root.
+  has_artifact_dir=0
+  for arg in ${scenario_args[@]+"${scenario_args[@]}"}; do
+    if [[ "${arg}" == "--artifact-dir" ]]; then
+      has_artifact_dir=1
+      break
+    fi
   done
+
+  # --help must short-circuit the e2e wrapper.
+  for arg in ${scenario_args[@]+"${scenario_args[@]}"}; do
+    if [[ "${arg}" == "--help" || "${arg}" == "-h" ]]; then
+      has_artifact_dir=-1
+      break
+    fi
+  done
+
+  if [[ "${has_artifact_dir}" == "0" ]]; then
+    artifact_dir="${EXAMPLE_ROOT}/artifacts/web3-service-order/$(date -u +%Y%m%dT%H%M%SZ)-e2e"
+    scenario_args+=(--artifact-dir "${artifact_dir}")
+    ARTIFACT_ROOT="${artifact_dir}"
+    run_e2e=1
+  elif [[ "${has_artifact_dir}" == "1" ]]; then
+    # Extract the provided artifact-dir for the e2e step.
+    for (( i=0; i<${#scenario_args[@]}; i++ )); do
+      if [[ "${scenario_args[$i]}" == "--artifact-dir" ]]; then
+        ARTIFACT_ROOT="${scenario_args[$((i+1))]}"
+        break
+      fi
+    done
+    run_e2e=1
+  fi
+fi
+
+CHIO_E2E_NEXT_PID=""
+cleanup_next_server() {
+  if [[ -n "${CHIO_E2E_NEXT_PID}" ]] && kill -0 "${CHIO_E2E_NEXT_PID}" 2>/dev/null; then
+    kill "${CHIO_E2E_NEXT_PID}" 2>/dev/null || true
+    wait "${CHIO_E2E_NEXT_PID}" 2>/dev/null || true
+  fi
 }
-trap cleanup EXIT
+trap cleanup_next_server EXIT
 
-# -- Chio trust-control --
-"${CHIO_BIN}" trust serve \
-  --listen "127.0.0.1:${TRUST_PORT}" --service-token "${SERVICE_TOKEN}" \
-  --receipt-db "${STATE_DIR}/trust-receipts.sqlite3" \
-  --revocation-db "${STATE_DIR}/trust-revocations.sqlite3" \
-  --authority-db "${STATE_DIR}/trust-authority.sqlite3" \
-  --budget-db "${STATE_DIR}/trust-budgets.sqlite3" \
-  >"${LOG_DIR}/trust.log" 2>&1 &
-BG_PIDS+=($!)
+"${EXAMPLE_ROOT}/scenario/01-web3-service-order.sh" ${scenario_args[@]+"${scenario_args[@]}"}
 
-# -- Chio MCP edges --
-for spec in \
-  "mcp-observability:${OBS_PORT}:observability:tools/observability.py" \
-  "mcp-github:${GIT_PORT}:github:tools/github.py" \
-  "mcp-pagerduty:${PD_PORT}:pagerduty:tools/pagerduty.py" \
-  "mcp-provider-ops:${OPS_PORT}:provider-ops:tools/provider_ops.py"; do
-  IFS=: read -r sid port policy script <<< "${spec}"
-  "${CHIO_BIN}" mcp serve-http \
-    --policy "${EXAMPLE_ROOT}/policies/${policy}.yaml" \
-    --server-id "${sid}" --listen "127.0.0.1:${port}" \
-    --auth-token "${CHIO_AUTH_TOKEN}" --shared-hosted-owner \
-    -- python "${EXAMPLE_ROOT}/${script}" \
-    >"${LOG_DIR}/chio-${sid}.log" 2>&1 &
-  BG_PIDS+=($!)
-done
+if [[ "${run_e2e}" != "1" ]]; then
+  exit 0
+fi
 
-# -- Chio api protect sidecars (the chio_asgi middleware in services talks to these) --
-"${CHIO_BIN}" \
-  --control-url "http://127.0.0.1:${TRUST_PORT}" \
-  --control-token "${SERVICE_TOKEN}" \
-  api protect \
-  --upstream "http://127.0.0.1:${COORD_PORT}" \
-  --spec "${EXAMPLE_ROOT}/services/coordinator-openapi.yaml" \
-  --listen "127.0.0.1:${COORD_SIDECAR_PORT}" \
-  --receipt-store "${STATE_DIR}/coordinator-receipts.sqlite3" \
-  >"${LOG_DIR}/chio-coordinator-sidecar.log" 2>&1 &
-BG_PIDS+=($!)
+if [[ -z "${ARTIFACT_ROOT:-}" || ! -d "${ARTIFACT_ROOT}" ]]; then
+  echo "e2e: expected ARTIFACT_ROOT to exist after scenario, got '${ARTIFACT_ROOT:-}'" >&2
+  exit 1
+fi
 
-# Executor does its own Chio validation (capabilities, revocation, budget)
-# and calls tools through chio mcp serve-http. No sidecar needed.
+# Source helpers for pick_free_port / wait_for_http.
+# shellcheck source=/dev/null
+source "${EXAMPLE_ROOT}/../_shared/hello-http-common.sh"
 
-# -- Python services (with chio_asgi middleware pointing to their sidecars) --
-uv run --project "${EXAMPLE_ROOT}" python "${EXAMPLE_ROOT}/services/acp_broker.py" \
-  --port "${BROKER_PORT}" >"${LOG_DIR}/acp-broker.log" 2>&1 &
-BG_PIDS+=($!)
+# Build the Next app if needed. `.next/BUILD_ID` is the cheapest
+# staleness check; a missing or corrupted build triggers a rebuild.
+if [[ ! -f "${APP_ROOT}/.next/BUILD_ID" ]]; then
+  (cd "${APP_ROOT}" && bun run build >"${ARTIFACT_ROOT}/logs/next-build.log" 2>&1)
+fi
 
-CHIO_SIDECAR_URL="http://127.0.0.1:${COORD_SIDECAR_PORT}" \
-  uv run --project "${EXAMPLE_ROOT}" python "${EXAMPLE_ROOT}/services/coordinator.py" \
-  --port "${COORD_PORT}" >"${LOG_DIR}/coordinator.log" 2>&1 &
-BG_PIDS+=($!)
+CHIO_E2E_PORT="$(pick_free_port)"
+mkdir -p "${ARTIFACT_ROOT}/logs"
 
-uv run --project "${EXAMPLE_ROOT}" python "${EXAMPLE_ROOT}/services/executor.py" \
-  --port "${EXEC_PORT}" >"${LOG_DIR}/executor.log" 2>&1 &
-BG_PIDS+=($!)
+(
+  cd "${APP_ROOT}" \
+    && CHIO_BUNDLE_DIR="${ARTIFACT_ROOT}" PORT="${CHIO_E2E_PORT}" \
+       bun run start \
+       >"${ARTIFACT_ROOT}/logs/next.log" 2>&1
+) &
+CHIO_E2E_NEXT_PID=$!
 
-# -- Wait --
-wait_for_http "http://127.0.0.1:${TRUST_PORT}/health"
-wait_for_port 127.0.0.1 "${OBS_PORT}"
-wait_for_port 127.0.0.1 "${GIT_PORT}"
-wait_for_port 127.0.0.1 "${PD_PORT}"
-wait_for_port 127.0.0.1 "${OPS_PORT}"
-wait_for_http "http://127.0.0.1:${BROKER_PORT}/health"
-wait_for_http "http://127.0.0.1:${COORD_PORT}/health"
-wait_for_http "http://127.0.0.1:${EXEC_PORT}/health"
-wait_for_port 127.0.0.1 "${COORD_SIDECAR_PORT}"
+wait_for_http "http://127.0.0.1:${CHIO_E2E_PORT}/api/health"
 
-# -- Run orchestrator (calls services directly; chio_asgi middleware handles Chio) --
-uv run --project "${EXAMPLE_ROOT}" python "${EXAMPLE_ROOT}/orchestrate.py" \
-  --control-url "http://127.0.0.1:${TRUST_PORT}" \
-  --service-token "${SERVICE_TOKEN}" \
-  --broker-url "http://127.0.0.1:${BROKER_PORT}" \
-  --provider-coordinator-url "http://127.0.0.1:${COORD_PORT}" \
-  --provider-executor-url "http://127.0.0.1:${EXEC_PORT}" \
-  --provider-executor-internal-url "http://127.0.0.1:${EXEC_PORT}" \
-  --observability-mcp-url "http://127.0.0.1:${OBS_PORT}" \
-  --github-mcp-url "http://127.0.0.1:${GIT_PORT}" \
-  --pagerduty-mcp-url "http://127.0.0.1:${PD_PORT}" \
-  --provider-ops-mcp-url "http://127.0.0.1:${OPS_PORT}" \
-  --chio-auth-token "${CHIO_AUTH_TOKEN}" \
-  --artifact-dir "${ARTIFACT_ROOT}" \
-  > "${ARTIFACT_ROOT}/run-result.json"
+(
+  cd "${APP_ROOT}" \
+    && CHIO_E2E_BASE_URL="http://127.0.0.1:${CHIO_E2E_PORT}" \
+       bun run test:e2e --reporter=line --project=chromium
+)
 
-# -- Verify --
-uv run --project "${EXAMPLE_ROOT}" python -c "
-import sys; sys.path.insert(0, '${EXAMPLE_ROOT}')
-from incident_network.verify import verify_bundle
-import json
-r = verify_bundle('${ARTIFACT_ROOT}')
-json.dump(r, open('${ARTIFACT_ROOT}/review-result.json', 'w'), indent=2)
-assert r['ok'], r['errors']
-"
-
-printf 'internet-of-agents-incident-network smoke passed\n'
-printf 'artifacts: %s\n' "${ARTIFACT_ROOT}"
+printf 'playwright e2e passed\n'
